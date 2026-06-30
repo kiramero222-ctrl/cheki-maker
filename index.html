@@ -423,27 +423,13 @@
   </section>
 
   <section id="manage">
-    <div class="notice">共通フレームはSupabase Storageに保存されます。フレームは縦長・横長・正方形など自由なサイズで登録できます。チェキ作成は全員利用可能、フレーム追加・削除はログイン済み管理者のみ可能です。</div>
-
-    <div class="card">
-      <div class="step-label">管理者ログイン</div>
-      <div id="loggedOutBox" class="auth-grid">
-        <input class="text-input" id="emailInput" type="email" placeholder="メールアドレス">
-        <input class="text-input" id="passwordInput" type="password" placeholder="パスワード">
-        <button class="btn btn-primary" id="loginBtn">ログイン</button>
-      </div>
-      <div id="loggedInBox" style="display:none;">
-        <p class="status-msg" id="loginUserText"></p>
-        <button class="btn btn-ghost" id="logoutBtn">ログアウト</button>
-      </div>
-      <p class="status-msg" id="authStatus"></p>
-    </div>
+    <div class="notice">共通フレームはSupabase Storageに保存されます。ログインなしで誰でも透過PNGフレームを追加できます。削除は事故防止のため、この画面からは行えません。</div>
 
     <div class="card">
       <div class="step-label">フレームを追加</div>
-      <label class="upload-btn disabled" id="frameUploadLabel">透過PNGフレームをアップロード</label>
+      <label class="upload-btn" id="frameUploadLabel">透過PNGフレームをアップロード</label>
       <input type="file" id="frameInput" accept="image/png">
-      <p class="status-msg" id="frameUploadStatus">ログインするとアップロードできます。</p>
+      <p class="status-msg" id="frameUploadStatus">ログインなしでアップロードできます。PNGのみ対応です。</p>
     </div>
     <div class="card">
       <div class="step-label">登録済みフレーム</div>
@@ -457,7 +443,7 @@
 <script>
 // ===== Supabase設定 =====
 // Supabaseの Project URL と anon public key に差し替えてください。
-const SUPABASE_URL = 'https://hkgmjvwazgjixeztmbd.supabase.co';
+const SUPABASE_URL = 'https://hkgmjvwazgjixeztmbd.supabase.co;
 const SUPABASE_ANON_KEY = 'sb_publishable_46aIkoNlXH8NMWWT2IvQig_6yjSyrn4';
 const FRAME_BUCKET = 'cheki-frames';
 
@@ -470,8 +456,6 @@ let frameImg = null;
 let photoState = { x: 0, y: 0, scale: 1, baseScale: 1 };
 let dragging = false;
 let dragStart = { x: 0, y: 0, px: 0, py: 0 };
-let currentUser = null;
-
 let canvasW = 600;
 let canvasH = 800;
 
@@ -573,7 +557,6 @@ async function loadFrames() {
 }
 
 async function uploadFrameFile(file) {
-  if (!currentUser) throw new Error('ログインが必要です');
   if (!file || file.type !== 'image/png') throw new Error('PNGファイルのみアップロードできます');
 
   const safeName = file.name.replace(/[\\/:*?"<>|#%&{}$!'@+=`]/g, '_');
@@ -592,26 +575,7 @@ async function uploadFrameFile(file) {
 }
 
 async function deleteFrame(id) {
-  if (!currentUser) {
-    alert('削除するにはログインが必要です。');
-    return;
-  }
-
-  const { error } = await sb.storage.from(FRAME_BUCKET).remove([id]);
-  if (error) {
-    alert('削除に失敗しました。SupabaseのPolicyを確認してください。');
-    console.error(error);
-    return;
-  }
-
-  frames = frames.filter(f => f.id !== id);
-  if (selectedFrameId === id) {
-    selectedFrameId = null;
-    frameImg = null;
-    document.getElementById('composeCard').style.display = 'none';
-  }
-  renderFrameGrid();
-  renderFrameManageList();
+  alert('この版では画面から削除できません。削除したい場合はSupabaseのStorage画面から削除してください。');
 }
 
 function renderFrameGrid() {
@@ -645,13 +609,11 @@ function renderFrameManageList() {
     const row = document.createElement('div');
     row.className = 'frame-manage-item';
     row.innerHTML = '<img src="' + f.url + '" crossorigin="anonymous"><div class="fname">' + escapeHtml(f.name) + '</div>';
-    const btn = document.createElement('button');
-    btn.textContent = '削除';
-    btn.disabled = !currentUser;
-    btn.addEventListener('click', () => {
-      if (confirm(f.name + ' を削除しますか?')) deleteFrame(f.id);
-    });
-    row.appendChild(btn);
+    const note = document.createElement('div');
+    note.className = 'status-msg';
+    note.style.marginTop = '0';
+    note.textContent = '削除はSupabase側で実行';
+    row.appendChild(note);
     list.appendChild(row);
   });
 }
@@ -676,75 +638,6 @@ function selectFrame(id) {
   };
   img.src = f.url;
 }
-
-function updateAuthUI() {
-  const loggedOutBox = document.getElementById('loggedOutBox');
-  const loggedInBox = document.getElementById('loggedInBox');
-  const loginUserText = document.getElementById('loginUserText');
-  const frameUploadLabel = document.getElementById('frameUploadLabel');
-  const frameUploadStatus = document.getElementById('frameUploadStatus');
-
-  if (currentUser) {
-    loggedOutBox.style.display = 'none';
-    loggedInBox.style.display = 'block';
-    loginUserText.textContent = 'ログイン中：' + currentUser.email;
-    frameUploadLabel.classList.remove('disabled');
-    frameUploadStatus.textContent = '透過PNGフレームを追加できます。サイズ比率は自由です。';
-  } else {
-    loggedOutBox.style.display = 'grid';
-    loggedInBox.style.display = 'none';
-    loginUserText.textContent = '';
-    frameUploadLabel.classList.add('disabled');
-    frameUploadStatus.textContent = 'ログインするとアップロードできます。';
-  }
-  renderFrameManageList();
-}
-
-async function initAuth() {
-  if (!isSupabaseConfigured()) {
-    document.getElementById('authStatus').textContent = 'Supabase設定後にログイン機能が使えます。';
-    updateAuthUI();
-    return;
-  }
-  const { data } = await sb.auth.getUser();
-  currentUser = data && data.user ? data.user : null;
-  updateAuthUI();
-
-  sb.auth.onAuthStateChange((_event, session) => {
-    currentUser = session && session.user ? session.user : null;
-    updateAuthUI();
-  });
-}
-
-document.getElementById('loginBtn').addEventListener('click', async () => {
-  const email = document.getElementById('emailInput').value.trim();
-  const password = document.getElementById('passwordInput').value;
-  const authStatus = document.getElementById('authStatus');
-  authStatus.textContent = '';
-
-  if (!email || !password) {
-    authStatus.textContent = 'メールアドレスとパスワードを入力してください。';
-    return;
-  }
-
-  const { data, error } = await sb.auth.signInWithPassword({ email, password });
-  if (error) {
-    authStatus.textContent = 'ログインに失敗しました。メールアドレス・パスワードを確認してください。';
-    console.error(error);
-    return;
-  }
-
-  currentUser = data.user;
-  authStatus.textContent = 'ログインしました。';
-  updateAuthUI();
-});
-
-document.getElementById('logoutBtn').addEventListener('click', async () => {
-  await sb.auth.signOut();
-  currentUser = null;
-  document.getElementById('authStatus').textContent = 'ログアウトしました。';
-  updateAuthUI();
-});
 
 document.getElementById('frameInput').addEventListener('change', async (e) => {
   const file = e.target.files[0];
@@ -866,17 +759,12 @@ document.querySelectorAll('.tab').forEach(tab => {
 });
 
 document.getElementById('frameUploadLabel').addEventListener('click', () => {
-  if (!currentUser) {
-    document.getElementById('frameUploadStatus').textContent = '先に管理者ログインしてください。';
-    return;
-  }
   document.getElementById('frameInput').click();
 });
 document.getElementById('photoUploadLabel').addEventListener('click', () => {
   document.getElementById('photoInput').click();
 });
 
-initAuth();
 loadFrames();
 </script>
 </body>
