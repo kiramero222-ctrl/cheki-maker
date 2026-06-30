@@ -399,7 +399,7 @@
     <div class="card">
       <div class="step-label">STEP 1・フレームを選ぶ</div>
       <div id="frameGrid" class="frame-grid"></div>
-      <div id="frameEmptyMsg" class="empty-msg" style="display:none;">フレームがまだ登録されていません。管理者が「フレーム管理」タブから追加してください。</div>
+      <div id="frameEmptyMsg" class="empty-msg" style="display:none;">フレームがまだ登録されていません。GitHubの frames フォルダにPNGを追加してください。</div>
     </div>
 
     <div class="card">
@@ -423,14 +423,15 @@
   </section>
 
   <section id="manage">
-    <div class="notice">共通フレームはSupabase Storageに保存されます。ログインなしで誰でも透過PNGフレームを追加できます。削除は事故防止のため、この画面からは行えません。</div>
+    <div class="notice">この簡単版はSupabaseを使いません。GitHubの frames フォルダにPNGフレームを入れるだけで、全員が同じフレームを使えます。</div>
 
     <div class="card">
-      <div class="step-label">フレームを追加</div>
-      <label class="upload-btn" id="frameUploadLabel">透過PNGフレームをアップロード</label>
-      <input type="file" id="frameInput" accept="image/png">
-      <p class="status-msg" id="frameUploadStatus">ログインなしでアップロードできます。PNGのみ対応です。</p>
+      <div class="step-label">フレーム追加方法</div>
+      <p class="status-msg">GitHubの <b>cheki-maker</b> リポジトリに <b>frames</b> フォルダを作り、その中へ透過PNGフレームをアップロードしてください。</p>
+      <p class="status-msg">例：<b>frames/frame01.png</b> / <b>frames/y2k-pink.png</b></p>
+      <button class="btn btn-primary" id="reloadFramesBtn">フレーム一覧を再読み込み</button>
     </div>
+
     <div class="card">
       <div class="step-label">登録済みフレーム</div>
       <div id="frameManageList"></div>
@@ -439,15 +440,13 @@
   </section>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-// ===== Supabase設定 =====
-// Supabaseの Project URL と anon public key に差し替えてください。
-const SUPABASE_URL = 'https://hkgmjvwazgjixeztmbd.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_46aIkoNlXH8NMWWT2IvQig_6yjSyrn4';
-const FRAME_BUCKET = 'cheki-frames';
-
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// ===== GitHubだけで動く簡単版 =====
+// GitHub Pagesのリポジトリ情報です。通常はこのままでOKです。
+const GITHUB_OWNER = 'kiramero222-ctrl';
+const GITHUB_REPO = 'cheki-maker';
+const GITHUB_BRANCH = 'main';
+const FRAME_DIR = 'frames';
 
 let frames = [];
 let selectedFrameId = null;
@@ -456,23 +455,9 @@ let frameImg = null;
 let photoState = { x: 0, y: 0, scale: 1, baseScale: 1 };
 let dragging = false;
 let dragStart = { x: 0, y: 0, px: 0, py: 0 };
+
 let canvasW = 600;
 let canvasH = 800;
-
-function uid() {
-  return Math.random().toString(36).slice(2, 10);
-}
-
-function isSupabaseConfigured() {
-  return !SUPABASE_URL.includes('YOUR_PROJECT_ID') && !SUPABASE_ANON_KEY.includes('YOUR_SUPABASE_ANON_PUBLIC_KEY');
-}
-
-function displayNameFromPath(path) {
-  const fileName = path.split('/').pop() || path;
-  return fileName
-    .replace(/^\d+_[a-z0-9]+_/, '')
-    .replace(/\.[^.]+$/, '');
-}
 
 function escapeHtml(s) {
   const d = document.createElement('div');
@@ -480,102 +465,70 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
-function updateCanvasStatus() {
-  const status = document.getElementById('canvasStatus');
-  if (!status) return;
-  if (frameImg) {
-    status.textContent = '写真をドラッグすると位置を調整できます。保存サイズ：' + canvasW + ' × ' + canvasH + 'px';
-  } else {
-    status.textContent = '写真をドラッグすると位置を調整できます';
-  }
+function displayNameFromPath(path) {
+  const fileName = path.split('/').pop() || path;
+  return fileName.replace(/\.[^.]+$/, '');
 }
 
-function resizeCanvasToFrame(img) {
-  canvasW = Math.max(1, Math.round(img.naturalWidth || img.width || 600));
-  canvasH = Math.max(1, Math.round(img.naturalHeight || img.height || 800));
-  canvas.width = canvasW;
-  canvas.height = canvasH;
-  if (photoImg) resetPhotoFit();
-  updateCanvasStatus();
+function getSiteBasePath() {
+  // GitHub Pagesの /cheki-maker/ 配下でも、ローカル確認でも動くようにする
+  const path = window.location.pathname;
+  if (path.endsWith('/')) return path;
+  return path.replace(/\/[^/]*$/, '/') || '/';
 }
 
-function resetPhotoFit() {
-  if (!photoImg) return;
-  const scaleX = canvasW / photoImg.width;
-  const scaleY = canvasH / photoImg.height;
-  photoState.baseScale = Math.max(scaleX, scaleY);
-  photoState.scale = 1;
-  photoState.x = 0;
-  photoState.y = 0;
-  document.getElementById('zoomRange').value = 100;
+function frameUrlFromName(name, sha) {
+  const safeName = encodeURIComponent(name).replace(/%2F/g, '/');
+  return getSiteBasePath() + FRAME_DIR + '/' + safeName + '?v=' + encodeURIComponent(sha || Date.now());
 }
 
 async function loadFrames() {
   const emptyMsg = document.getElementById('frameEmptyMsg');
+  emptyMsg.textContent = 'フレームを読み込み中です...';
+  emptyMsg.style.display = 'block';
 
-  if (!isSupabaseConfigured()) {
-    frames = [];
-    emptyMsg.textContent = 'Supabase設定が未入力です。HTML内の SUPABASE_URL と SUPABASE_ANON_KEY を設定してください。';
+  try {
+    const apiUrl = 'https://api.github.com/repos/' + GITHUB_OWNER + '/' + GITHUB_REPO + '/contents/' + FRAME_DIR + '?ref=' + GITHUB_BRANCH;
+    const res = await fetch(apiUrl, { cache: 'no-store' });
+
+    if (res.status === 404) {
+      frames = [];
+      emptyMsg.textContent = 'frames フォルダがまだありません。GitHubで frames フォルダを作り、PNGフレームを入れてください。';
+      renderFrameGrid();
+      renderFrameManageList();
+      return;
+    }
+
+    if (!res.ok) throw new Error('GitHub API error: ' + res.status);
+
+    const data = await res.json();
+    frames = (Array.isArray(data) ? data : [])
+      .filter(item => item.type === 'file' && item.name && item.name.toLowerCase().endsWith('.png'))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ja'))
+      .map(item => {
+        return {
+          id: item.name,
+          name: displayNameFromPath(item.name),
+          url: frameUrlFromName(item.name, item.sha),
+          sha: item.sha || ''
+        };
+      });
+
+    if (selectedFrameId && !frames.some(f => f.id === selectedFrameId)) {
+      selectedFrameId = null;
+      frameImg = null;
+      document.getElementById('composeCard').style.display = 'none';
+    }
+
     renderFrameGrid();
     renderFrameManageList();
-    return;
-  }
-
-  const { data, error } = await sb.storage
-    .from(FRAME_BUCKET)
-    .list('', { limit: 100, sortBy: { column: 'created_at', order: 'asc' } });
-
-  if (error) {
-    frames = [];
-    emptyMsg.textContent = 'フレーム一覧の取得に失敗しました。SupabaseのBucket名・Policyを確認してください。';
-    renderFrameGrid();
-    renderFrameManageList();
+  } catch (error) {
     console.error(error);
-    return;
+    frames = [];
+    emptyMsg.textContent = 'フレーム一覧の取得に失敗しました。GitHubのリポジトリ名・framesフォルダを確認してください。';
+    renderFrameGrid();
+    renderFrameManageList();
   }
-
-  frames = (data || [])
-    .filter(item => item.name && item.name.toLowerCase().endsWith('.png'))
-    .map(item => {
-      const { data: publicData } = sb.storage.from(FRAME_BUCKET).getPublicUrl(item.name);
-      return {
-        id: item.name,
-        path: item.name,
-        name: displayNameFromPath(item.name),
-        url: publicData.publicUrl,
-        createdAt: item.created_at || ''
-      };
-    });
-
-  if (selectedFrameId && !frames.some(f => f.id === selectedFrameId)) {
-    selectedFrameId = null;
-    frameImg = null;
-  }
-
-  renderFrameGrid();
-  renderFrameManageList();
-}
-
-async function uploadFrameFile(file) {
-  if (!file || file.type !== 'image/png') throw new Error('PNGファイルのみアップロードできます');
-
-  const safeName = file.name.replace(/[\\/:*?"<>|#%&{}$!'@+=`]/g, '_');
-  const path = Date.now() + '_' + uid() + '_' + safeName;
-
-  const { error } = await sb.storage
-    .from(FRAME_BUCKET)
-    .upload(path, file, {
-      contentType: 'image/png',
-      cacheControl: '3600',
-      upsert: false
-    });
-
-  if (error) throw error;
-  await loadFrames();
-}
-
-async function deleteFrame(id) {
-  alert('この版では画面から削除できません。削除したい場合はSupabaseのStorage画面から削除してください。');
 }
 
 function renderFrameGrid() {
@@ -608,14 +561,39 @@ function renderFrameManageList() {
   frames.forEach(f => {
     const row = document.createElement('div');
     row.className = 'frame-manage-item';
-    row.innerHTML = '<img src="' + f.url + '" crossorigin="anonymous"><div class="fname">' + escapeHtml(f.name) + '</div>';
-    const note = document.createElement('div');
-    note.className = 'status-msg';
-    note.style.marginTop = '0';
-    note.textContent = '削除はSupabase側で実行';
-    row.appendChild(note);
+    row.innerHTML = '<img src="' + f.url + '" crossorigin="anonymous"><div class="fname">' + escapeHtml(f.name) + '.png</div>';
     list.appendChild(row);
   });
+}
+
+function updateCanvasStatus() {
+  const status = document.getElementById('canvasStatus');
+  if (!status) return;
+  if (frameImg) {
+    status.textContent = '写真をドラッグすると位置を調整できます。保存サイズ：' + canvasW + ' × ' + canvasH + 'px';
+  } else {
+    status.textContent = '写真をドラッグすると位置を調整できます';
+  }
+}
+
+function resizeCanvasToFrame(img) {
+  canvasW = Math.max(1, Math.round(img.naturalWidth || img.width || 600));
+  canvasH = Math.max(1, Math.round(img.naturalHeight || img.height || 800));
+  canvas.width = canvasW;
+  canvas.height = canvasH;
+  if (photoImg) resetPhotoFit();
+  updateCanvasStatus();
+}
+
+function resetPhotoFit() {
+  if (!photoImg) return;
+  const scaleX = canvasW / photoImg.width;
+  const scaleY = canvasH / photoImg.height;
+  photoState.baseScale = Math.max(scaleX, scaleY);
+  photoState.scale = 1;
+  photoState.x = 0;
+  photoState.y = 0;
+  document.getElementById('zoomRange').value = 100;
 }
 
 function selectFrame(id) {
@@ -634,26 +612,15 @@ function selectFrame(id) {
     }
   };
   img.onerror = () => {
-    alert('フレーム画像の読み込みに失敗しました。');
+    alert('フレーム画像の読み込みに失敗しました。GitHubの frames フォルダを確認してください。');
   };
   img.src = f.url;
 }
 
-document.getElementById('frameInput').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const statusEl = document.getElementById('frameUploadStatus');
-  try {
-    statusEl.textContent = 'アップロード中です...';
-    await uploadFrameFile(file);
-    statusEl.textContent = '「' + file.name.replace(/\.[^.]+$/, '') + '」を追加しました。';
-  } catch (err) {
-    statusEl.textContent = err.message || '保存に失敗しました。もう一度お試しください。';
-    console.error(err);
-  } finally {
-    e.target.value = '';
-  }
-});
+const canvas = document.getElementById('composeCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = canvasW;
+canvas.height = canvasH;
 
 document.getElementById('photoInput').addEventListener('change', (e) => {
   const file = e.target.files[0];
@@ -678,11 +645,6 @@ document.getElementById('photoInput').addEventListener('change', (e) => {
   reader.readAsDataURL(file);
   e.target.value = '';
 });
-
-const canvas = document.getElementById('composeCanvas');
-const ctx = canvas.getContext('2d');
-canvas.width = canvasW;
-canvas.height = canvasH;
 
 function drawCanvas() {
   ctx.clearRect(0, 0, canvasW, canvasH);
@@ -744,7 +706,7 @@ document.getElementById('downloadBtn').addEventListener('click', () => {
     link.href = canvas.toDataURL('image/png');
     link.click();
   } catch (err) {
-    alert('画像保存に失敗しました。フレーム画像のCORS設定を確認してください。');
+    alert('画像保存に失敗しました。フレーム画像の読み込み設定を確認してください。');
     console.error(err);
   }
 });
@@ -758,11 +720,12 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-document.getElementById('frameUploadLabel').addEventListener('click', () => {
-  document.getElementById('frameInput').click();
-});
 document.getElementById('photoUploadLabel').addEventListener('click', () => {
   document.getElementById('photoInput').click();
+});
+
+document.getElementById('reloadFramesBtn').addEventListener('click', () => {
+  loadFrames();
 });
 
 loadFrames();
